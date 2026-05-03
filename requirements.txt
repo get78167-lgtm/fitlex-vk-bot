@@ -1,0 +1,2 @@
+vkbottle>=4.3.12
+yookassa>=3.0.0
