@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 
 from vkbottle import (
@@ -15,6 +16,7 @@ from vkbottle import (
     KeyboardButtonColor,
     Text,
     Callback,
+    OpenLink,
     GroupEventType,
     GroupTypes,
 )
@@ -453,6 +455,51 @@ async def on_callback(event: GroupTypes.MessageEvent):
             else:
                 snackbar = "⚠️ Ошибка создания платежа"
 
+    elif cmd == "pay_order":
+        # Оплата заказа VK через ЮКасса
+        order_amount = payload.get("amount", 0)
+        order_num = payload.get("order", "—")
+        if order_amount > 0:
+            try:
+                receipt_items = [{
+                    "description": f"Оплата заказа №{order_num}"[:128],
+                    "quantity": "1",
+                    "amount": {"value": f"{order_amount}.00", "currency": PAYMENT_CURRENCY},
+                    "vat_code": 1,
+                    "payment_subject": "commodity",
+                    "payment_mode": "full_payment",
+                }]
+                payment = Payment.create(
+                    {
+                        "amount": {"value": f"{order_amount}.00", "currency": PAYMENT_CURRENCY},
+                        "confirmation": {"type": "redirect", "return_url": "https://vk.com/fitlex_group"},
+                        "capture": True,
+                        "description": f"FITLEX заказ №{order_num}",
+                        "metadata": {"vk_user_id": str(user_id), "order": order_num},
+                        "receipt": {
+                            "customer": {"email": "order@fitlex.ru"},
+                            "items": receipt_items,
+                        },
+                    },
+                    str(uuid.uuid4()),
+                )
+                url = payment.confirmation.confirmation_url
+                pending_payments[payment.id] = user_id
+                await bot.api.messages.send(
+                    user_id=user_id, random_id=0,
+                    message=(
+                        f"💳 Оплата заказа №{order_num} через ЮКасса:\n{url}\n\n"
+                        f"💰 Сумма: {order_amount} ₽\n"
+                        "После оплаты я пришлю подтверждение."
+                    ),
+                )
+                asyncio.create_task(poll_payment_status(payment.id, user_id))
+            except Exception as exc:
+                logger.error("Ошибка оплаты заказа VK: %s", exc)
+                snackbar = "⚠️ Ошибка создания платежа"
+        else:
+            snackbar = "⚠️ Не удалось определить сумму заказа"
+
     elif cmd == "faq" and pid:
         answer = FAQ_ITEMS.get(pid, "Информация не найдена.")
         await bot.api.messages.send(
@@ -513,25 +560,56 @@ async def handle_about(message: Message):
 
 @bot.on.message()
 async def handle_any(message: Message):
-    # Игнорируем сообщения от сообщества (системные уведомления, заказы и т.п.)
+    # Игнорируем сообщения от сообщества (кроме заказов)
     if message.from_id <= 0:
-        return
+        text_check = (message.text or "").lower()
+        if "заказ успешно оформлен" not in text_check:
+            return
 
     text = message.text.lower()
 
-    # Игнорируем системные сообщения VK (уведомления о заказах, оплатах)
-    skip_phrases = [
-        "заказ успешно оформлен",
-        "номер заказа",
-        "информация о заказе",
-        "стоимость заказа",
-        "способ доставки",
-        "заказ отменён",
-        "заказ доставлен",
-        "статус заказа",
-    ]
+    # Обработка уведомления о заказе VK Market
+    if "заказ успешно оформлен" in text:
+        # Парсим данные заказа
+        order_match = re.search(r'номер заказа\s+(\d+)', text)
+        amount_match = re.search(r'стоимость заказа:\s*([\d\s]+)\s*руб', text)
+        delivery_match = re.search(r'стоимость доставки:\s*([\d\s]+)\s*руб', text)
+        order_url_match = re.search(r'(https://vk\.com/orders\S+)', message.text)
+
+        order_num = order_match.group(1) if order_match else "—"
+        total = int(amount_match.group(1).replace(' ', '').replace('\xa0', '')) if amount_match else 0
+        delivery = int(delivery_match.group(1).replace(' ', '').replace('\xa0', '')) if delivery_match else 0
+        order_url = order_url_match.group(1) if order_url_match else ""
+
+        # Определяем user_id (для ответа)
+        uid = message.from_id if message.from_id > 0 else message.peer_id
+
+        logger.info("Заказ VK №%s: сумма=%s, доставка=%s, user=%s", order_num, total, delivery, uid)
+
+        # Клавиатура с двумя способами оплаты
+        kb = Keyboard(inline=True)
+        if order_url:
+            kb.add(OpenLink(order_url, label="💳 Оплатить через VK Pay"))
+            kb.row()
+        if total > 0:
+            kb.add(Callback("💳 Оплатить через ЮКасса", payload={"c": "pay_order", "amount": total, "order": order_num}))
+
+        await bot.api.messages.send(
+            peer_id=message.peer_id, random_id=0,
+            message=(
+                f"✅ Заказ №{order_num} оформлен!\n\n"
+                f"💰 Сумма товаров: {total} ₽\n"
+                f"🚚 Доставка: {delivery} ₽\n"
+                f"💵 Итого: {total + delivery} ₽\n\n"
+                "Выберите способ оплаты:"
+            ),
+            keyboard=kb.get_json(),
+        )
+        return
+
+    # Игнорируем прочие системные сообщения
+    skip_phrases = ["заказ отменён", "заказ доставлен", "статус заказа"]
     if any(phrase in text for phrase in skip_phrases):
-        logger.info("Пропускаем системное сообщение о заказе от user=%s", message.from_id)
         return
 
     # Обработка шаблонного сообщения «Меня заинтересовал данный товар»
