@@ -560,51 +560,87 @@ async def handle_about(message: Message):
 
 @bot.on.message()
 async def handle_any(message: Message):
-    # Игнорируем сообщения от сообщества (кроме заказов)
-    if message.from_id <= 0:
-        text_check = (message.text or "").lower()
-        if "заказ успешно оформлен" not in text_check:
-            return
+    # Логируем все сообщения для отладки
+    logger.info(
+        "RAW MSG: from_id=%s, peer_id=%s, text=%r, attachments=%s",
+        message.from_id, message.peer_id,
+        (message.text or "")[:200],
+        len(message.attachments) if message.attachments else 0,
+    )
 
-    text = message.text.lower()
+    raw_text = message.text or ""
+    text = raw_text.lower()
 
     # Обработка уведомления о заказе VK Market
-    if "заказ успешно оформлен" in text:
-        # Парсим данные заказа
-        order_match = re.search(r'номер заказа\s+(\d+)', text)
-        amount_match = re.search(r'стоимость заказа:\s*([\d\s]+)\s*руб', text)
-        delivery_match = re.search(r'стоимость доставки:\s*([\d\s]+)\s*руб', text)
-        order_url_match = re.search(r'(https://vk\.com/orders\S+)', message.text)
+    if "заказ успешно оформлен" in text or "номер заказа" in text:
+        # Парсим данные заказа (учитываем неразрывные пробелы \xa0 и обычные)
+        clean_text = raw_text.replace('\xa0', ' ')
+        clean_lower = clean_text.lower()
+
+        order_match = re.search(r'номер заказа\s+(\d+)', clean_lower)
+        # Стоимость может быть "3 550" или "3550" или "3,550"
+        amount_match = re.search(r'стоимость заказа:\s*([\d\s,.]+)\s*руб', clean_lower)
+        delivery_match = re.search(r'стоимость доставки:\s*([\d\s,.]+)\s*руб', clean_lower)
+        order_url_match = re.search(r'(https://vk\.com/orders\S+)', clean_text)
 
         order_num = order_match.group(1) if order_match else "—"
-        total = int(amount_match.group(1).replace(' ', '').replace('\xa0', '')) if amount_match else 0
-        delivery = int(delivery_match.group(1).replace(' ', '').replace('\xa0', '')) if delivery_match else 0
+
+        def parse_amount(match):
+            if not match:
+                return 0
+            raw = match.group(1).replace(' ', '').replace(',', '').replace('.', '')
+            return int(raw) if raw.isdigit() else 0
+
+        total = parse_amount(amount_match)
+        delivery = parse_amount(delivery_match)
         order_url = order_url_match.group(1) if order_url_match else ""
 
-        # Определяем user_id (для ответа)
-        uid = message.from_id if message.from_id > 0 else message.peer_id
+        # Извлекаем user_id покупателя из URL заказа (формат: /orders{user_id}_{order_num})
+        buyer_id = None
+        if order_url:
+            buyer_match = re.search(r'/orders(\d+)_', order_url)
+            if buyer_match:
+                buyer_id = int(buyer_match.group(1))
 
-        logger.info("Заказ VK №%s: сумма=%s, доставка=%s, user=%s", order_num, total, delivery, uid)
+        # Определяем куда отправлять ответ
+        if buyer_id:
+            reply_peer = buyer_id
+        elif message.from_id > 0:
+            reply_peer = message.from_id
+        else:
+            reply_peer = message.peer_id
+
+        logger.info(
+            "Заказ VK №%s: сумма=%s, доставка=%s, from_id=%s, peer_id=%s, buyer=%s, reply_to=%s",
+            order_num, total, delivery, message.from_id, message.peer_id, buyer_id, reply_peer,
+        )
 
         # Клавиатура с двумя способами оплаты
         kb = Keyboard(inline=True)
         if order_url:
             kb.add(OpenLink(order_url, label="💳 Оплатить через VK Pay"))
             kb.row()
-        if total > 0:
-            kb.add(Callback("💳 Оплатить через ЮКасса", payload={"c": "pay_order", "amount": total, "order": order_num}))
+        full_amount = total + delivery if delivery > 0 else total
+        if full_amount > 0:
+            kb.add(Callback(
+                "💳 Оплатить через ЮКасса",
+                payload={"c": "pay_order", "amount": full_amount, "order": order_num},
+            ))
+
+        msg_text = f"✅ Заказ №{order_num} оформлен!\n\n💰 Сумма товаров: {total} ₽\n"
+        if delivery > 0:
+            msg_text += f"🚚 Доставка: {delivery} ₽\n💵 Итого: {total + delivery} ₽\n"
+        msg_text += "\nВыберите способ оплаты:"
 
         await bot.api.messages.send(
-            peer_id=message.peer_id, random_id=0,
-            message=(
-                f"✅ Заказ №{order_num} оформлен!\n\n"
-                f"💰 Сумма товаров: {total} ₽\n"
-                f"🚚 Доставка: {delivery} ₽\n"
-                f"💵 Итого: {total + delivery} ₽\n\n"
-                "Выберите способ оплаты:"
-            ),
+            peer_id=reply_peer, random_id=0,
+            message=msg_text,
             keyboard=kb.get_json(),
         )
+        return
+
+    # Игнорируем сообщения от сообщества (системные уведомления)
+    if message.from_id <= 0:
         return
 
     # Игнорируем прочие системные сообщения
