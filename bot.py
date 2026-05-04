@@ -11,6 +11,12 @@ import os
 import re
 import uuid
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # Railway doesn't need dotenv
+
 from vkbottle import (
     Keyboard,
     KeyboardButtonColor,
@@ -359,6 +365,81 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
         keyboard=kb_main_menu(),
     )
     pending_payments.pop(payment_id, None)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  ОБРАБОТЧИК ЗАКАЗОВ VK MARKET
+# ═══════════════════════════════════════════════════════════════
+
+
+@bot.on.raw_event("market_order_new", dataclass=dict)
+async def on_market_order(event: dict):
+    """Обработка нового заказа из VK Market."""
+    order = event.get("object", event)  # структура может отличаться
+    logger.info("MARKET ORDER RAW: %s", json.dumps(order, ensure_ascii=False, default=str)[:1000])
+
+    # Извлекаем данные заказа
+    order_id = order.get("id", "—")
+    buyer_id = order.get("user_id") or order.get("buyer_id")
+    total_price = order.get("total_price", {})
+
+    # Цена может быть в копейках или рублях
+    amount = 0
+    if isinstance(total_price, dict):
+        amount = int(total_price.get("amount", 0))
+        if amount > 10000:  # скорее всего в копейках
+            amount = amount // 100
+    elif isinstance(total_price, (int, float)):
+        amount = int(total_price)
+
+    # Стоимость доставки
+    delivery = 0
+    delivery_info = order.get("delivery", {})
+    if isinstance(delivery_info, dict):
+        delivery_price = delivery_info.get("price", {})
+        if isinstance(delivery_price, dict):
+            delivery = int(delivery_price.get("amount", 0))
+            if delivery > 10000:
+                delivery = delivery // 100
+        elif isinstance(delivery_price, (int, float)):
+            delivery = int(delivery_price)
+
+    logger.info(
+        "Заказ VK Market: id=%s, buyer=%s, amount=%s, delivery=%s",
+        order_id, buyer_id, amount, delivery,
+    )
+
+    if not buyer_id:
+        logger.warning("Не удалось определить покупателя для заказа %s", order_id)
+        return
+
+    # Клавиатура с двумя способами оплаты
+    kb = Keyboard(inline=True)
+    order_url = f"https://vk.com/orders{buyer_id}_{order_id}"
+    kb.add(OpenLink(order_url, label="💳 Оплатить через VK Pay"))
+    kb.row()
+
+    full_amount = amount + delivery if delivery > 0 else amount
+    if full_amount > 0:
+        kb.add(Callback(
+            "💳 Оплатить через ЮКасса",
+            payload={"c": "pay_order", "amount": full_amount, "order": str(order_id)},
+        ))
+
+    msg_text = f"✅ Заказ №{order_id} оформлен!\n\n💰 Сумма товаров: {amount} ₽\n"
+    if delivery > 0:
+        msg_text += f"🚚 Доставка: {delivery} ₽\n💵 Итого: {amount + delivery} ₽\n"
+    msg_text += "\nВыберите способ оплаты:"
+
+    try:
+        await bot.api.messages.send(
+            user_id=buyer_id, random_id=0,
+            message=msg_text,
+            keyboard=kb.get_json(),
+        )
+        logger.info("Кнопки оплаты отправлены покупателю %s", buyer_id)
+    except Exception as exc:
+        logger.error("Ошибка отправки кнопок покупателю %s: %s", buyer_id, exc)
 
 
 # ═══════════════════════════════════════════════════════════════
