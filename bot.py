@@ -558,20 +558,18 @@ async def on_callback(event: GroupTypes.MessageEvent):
             payment = create_payment(user_id)
             if payment:
                 url = payment.confirmation.confirmation_url
-                try:
-                    short_link_resp = await bot.api.utils.get_short_link(url=url)
-                    url = short_link_resp.short_url
-                except Exception as e:
-                    logger.warning("Не удалось сократить ссылку %s: %s", url, e)
+                pay_kb = Keyboard(inline=True)
+                pay_kb.add(OpenLink(url, label="💳 Перейти к оплате"))
 
                 pending_payments[payment.id] = user_id
                 await bot.api.messages.send(
                     user_id=user_id, random_id=0,
                     message=(
-                        f"💳 Ссылка для оплаты:\n{url}\n\n"
-                        f"💰 Сумма: {total} ₽\n"
+                        f"💰 Сумма: {total} ₽\n\n"
+                        "Нажмите кнопку ниже для оплаты.\n"
                         "После оплаты я пришлю подтверждение."
                     ),
+                    keyboard=pay_kb.get_json(),
                 )
                 asyncio.create_task(poll_payment_status(payment.id, user_id))
             else:
@@ -606,20 +604,19 @@ async def on_callback(event: GroupTypes.MessageEvent):
                     str(uuid.uuid4()),
                 )
                 url = payment.confirmation.confirmation_url
-                try:
-                    short_link_resp = await bot.api.utils.get_short_link(url=url)
-                    url = short_link_resp.short_url
-                except Exception as e:
-                    logger.warning("Не удалось сократить ссылку %s: %s", url, e)
+                pay_kb = Keyboard(inline=True)
+                pay_kb.add(OpenLink(url, label=f"💳 Оплатить {order_amount} ₽"))
 
                 pending_payments[payment.id] = user_id
                 await bot.api.messages.send(
                     user_id=user_id, random_id=0,
                     message=(
-                        f"💳 Оплата заказа №{order_num} через ЮКасса:\n{url}\n\n"
-                        f"💰 Сумма: {order_amount} ₽\n"
+                        f"💳 Оплата заказа №{order_num} через ЮКасса\n\n"
+                        f"💰 Сумма: {order_amount} ₽\n\n"
+                        "Нажмите кнопку ниже для оплаты.\n"
                         "После оплаты я пришлю подтверждение."
                     ),
+                    keyboard=pay_kb.get_json(),
                 )
                 asyncio.create_task(poll_payment_status(payment.id, user_id))
             except Exception as exc:
