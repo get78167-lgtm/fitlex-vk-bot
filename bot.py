@@ -178,17 +178,50 @@ FAQ_ITEMS = {
 }
 
 # ═══════════════════════════════════════════════════════════════
-#  КОРЗИНА (in-memory)
+#  КОРЗИНА (файловое хранилище — переживает перезапуски)
 # ═══════════════════════════════════════════════════════════════
 
-# {user_id: {product_id: quantity}}
-user_carts: dict[int, dict[int, int]] = {}
+CART_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "carts.json")
+
 # {payment_id: user_id}
 pending_payments: dict[str, int] = {}
 
 
+def _load_carts() -> dict[str, dict[str, int]]:
+    """Загрузить корзины из файла."""
+    try:
+        with open(CART_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_carts(carts: dict) -> None:
+    """Сохранить корзины в файл."""
+    try:
+        with open(CART_FILE, "w", encoding="utf-8") as f:
+            json.dump(carts, f, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("Ошибка сохранения корзин: %s", exc)
+
+
 def get_cart(user_id: int) -> dict[int, int]:
-    return user_carts.setdefault(user_id, {})
+    carts = _load_carts()
+    raw = carts.get(str(user_id), {})
+    return {int(k): v for k, v in raw.items()}
+
+
+def set_cart(user_id: int, cart: dict[int, int]) -> None:
+    carts = _load_carts()
+    if cart:
+        carts[str(user_id)] = {str(k): v for k, v in cart.items()}
+    else:
+        carts.pop(str(user_id), None)
+    _save_carts(carts)
+
+
+def clear_cart(user_id: int) -> None:
+    set_cart(user_id, {})
 
 
 def cart_total(user_id: int) -> int:
@@ -334,7 +367,7 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
 
         if payment.status == "succeeded":
             logger.info("Платёж %s успешен!", payment_id)
-            user_carts.pop(user_id, None)
+            clear_cart(user_id)
             await bot.api.messages.send(
                 user_id=user_id, random_id=0,
                 message=(
@@ -352,7 +385,7 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
             logger.info("Платёж %s отменён.", payment_id)
             await bot.api.messages.send(
                 user_id=user_id, random_id=0,
-                message="❌ Платёж отменён. Ваша корзина сохранена — попробуйте снова.",
+                message="❌ Платёж отменён. Попробуйте снова.",
                 keyboard=kb_main_menu(),
             )
             pending_payments.pop(payment_id, None)
@@ -361,7 +394,7 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
     logger.warning("Таймаут для платежа %s", payment_id)
     await bot.api.messages.send(
         user_id=user_id, random_id=0,
-        message="⏳ Время ожидания оплаты истекло. Корзина сохранена.",
+        message="⏳ Время ожидания оплаты истекло. Вернитесь в корзину и попробуйте снова.",
         keyboard=kb_main_menu(),
     )
     pending_payments.pop(payment_id, None)
@@ -523,6 +556,12 @@ async def on_callback(event: GroupTypes.MessageEvent):
             payment = create_payment(user_id)
             if payment:
                 url = payment.confirmation.confirmation_url
+                try:
+                    short_link_resp = await bot.api.utils.get_short_link(url=url)
+                    url = short_link_resp.short_url
+                except Exception as e:
+                    logger.warning("Не удалось сократить ссылку %s: %s", url, e)
+
                 pending_payments[payment.id] = user_id
                 await bot.api.messages.send(
                     user_id=user_id, random_id=0,
@@ -565,6 +604,12 @@ async def on_callback(event: GroupTypes.MessageEvent):
                     str(uuid.uuid4()),
                 )
                 url = payment.confirmation.confirmation_url
+                try:
+                    short_link_resp = await bot.api.utils.get_short_link(url=url)
+                    url = short_link_resp.short_url
+                except Exception as e:
+                    logger.warning("Не удалось сократить ссылку %s: %s", url, e)
+
                 pending_payments[payment.id] = user_id
                 await bot.api.messages.send(
                     user_id=user_id, random_id=0,
