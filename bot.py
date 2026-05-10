@@ -510,6 +510,7 @@ async def on_callback(event: GroupTypes.MessageEvent):
         # Add to cart
         cart = get_cart(user_id)
         cart[pid] = cart.get(pid, 0) + 1
+        set_cart(user_id, cart)
         product = CATALOG_BY_ID.get(pid)
         snackbar = f"✅ {product['name']} добавлен в корзину"
         logger.info("user=%s добавил товар %s в корзину", user_id, pid)
@@ -518,6 +519,7 @@ async def on_callback(event: GroupTypes.MessageEvent):
         # Remove from cart
         cart = get_cart(user_id)
         cart.pop(pid, None)
+        set_cart(user_id, cart)
         snackbar = "🗑 Товар удалён из корзины"
         await bot.api.messages.send(
             user_id=user_id, random_id=0,
@@ -527,7 +529,7 @@ async def on_callback(event: GroupTypes.MessageEvent):
 
     elif cmd == "clr":
         # Clear cart
-        user_carts.pop(user_id, None)
+        clear_cart(user_id)
         snackbar = "🗑 Корзина очищена"
         await bot.api.messages.send(
             user_id=user_id, random_id=0,
