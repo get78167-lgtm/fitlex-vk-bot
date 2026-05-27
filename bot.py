@@ -6,6 +6,10 @@ VK Bot для сообщества FITLEX — «Краски и грунтовк
 
 import sys
 import os
+import faulthandler
+
+# Включаем отслеживание segfault'ов и других низкоуровневых падений
+faulthandler.enable()
 
 # Принудительно отключаем буферизацию вывода (для Docker/BotHost)
 os.environ["PYTHONUNBUFFERED"] = "1"
@@ -22,10 +26,32 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
     print("[STARTUP] dotenv загружен", flush=True)
-except ImportError:
-    print("[STARTUP] dotenv не найден (ок для сервера)", flush=True)
+except BaseException as e:
+    print(f"[STARTUP] ОШИБКА при загрузке dotenv: {type(e).__name__}: {e}", flush=True)
+
+print("[STARTUP] Начинаем пошаговый импорт зависимостей...", flush=True)
+
+# Пошаговый импорт ключевых библиотек
+steps = [
+    ("aiohttp", "import aiohttp"),
+    ("pydantic", "import pydantic"),
+    ("vbml", "import vbml"),
+    ("choicelib", "import choicelib"),
+    ("yarl", "import yarl"),
+    ("multidict", "import multidict"),
+    ("msgpack", "import msgpack"),
+]
+
+for name, cmd in steps:
+    try:
+        print(f"[STARTUP] Попытка импорта {name}...", flush=True)
+        exec(cmd)
+        print(f"[STARTUP] {name} успешно импортирован!", flush=True)
+    except BaseException as e:
+        print(f"[STARTUP] КРАШ/ОШИБКА при импорте {name}: {type(e).__name__}: {e}", flush=True)
 
 try:
+    print("[STARTUP] Импортируем vkbottle...", flush=True)
     from vkbottle import (
         Keyboard,
         KeyboardButtonColor,
@@ -37,15 +63,16 @@ try:
     )
     from vkbottle.bot import Bot, Message
     print("[STARTUP] vkbottle импортирован", flush=True)
-except Exception as e:
-    print(f"[STARTUP] ОШИБКА импорта vkbottle: {e}", flush=True)
+except BaseException as e:
+    print(f"[STARTUP] КРАШ/ОШИБКА при импорте vkbottle: {type(e).__name__}: {e}", flush=True)
     sys.exit(1)
 
 try:
+    print("[STARTUP] Импортируем yookassa...", flush=True)
     from yookassa import Configuration, Payment
     print("[STARTUP] yookassa импортирован", flush=True)
-except Exception as e:
-    print(f"[STARTUP] ОШИБКА импорта yookassa: {e}", flush=True)
+except BaseException as e:
+    print(f"[STARTUP] КРАШ/ОШИБКА при импорте yookassa: {type(e).__name__}: {e}", flush=True)
     sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════════
