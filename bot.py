@@ -51,7 +51,25 @@ for name, cmd in steps:
         print(f"[STARTUP] КРАШ/ОШИБКА при импорте {name}: {type(e).__name__}: {e}", flush=True)
 
 try:
-    print("[STARTUP] Импортируем vkbottle...", flush=True)
+    print("[STARTUP] Импортируем vkbottle подмодули...", flush=True)
+    
+    # Список подмодулей vkbottle для пошаговой проверки
+    vk_subs = [
+        "vkbottle.modules",
+        "vkbottle.exception",
+        "vkbottle.http",
+        "vkbottle.api",
+        "vkbottle.tools",
+        "vkbottle.dispatch",
+        "vkbottle.framework",
+        "vkbottle.bot",
+    ]
+    
+    for sub in vk_subs:
+        print(f"[STARTUP] Попытка импорта подмодуля {sub}...", flush=True)
+        exec(f"import {sub}")
+        print(f"[STARTUP] Подмодуль {sub} успешно импортирован!", flush=True)
+
     from vkbottle import (
         Keyboard,
         KeyboardButtonColor,
@@ -62,7 +80,7 @@ try:
         GroupTypes,
     )
     from vkbottle.bot import Bot, Message
-    print("[STARTUP] vkbottle импортирован", flush=True)
+    print("[STARTUP] vkbottle импортирован полностью", flush=True)
 except BaseException as e:
     print(f"[STARTUP] КРАШ/ОШИБКА при импорте vkbottle: {type(e).__name__}: {e}", flush=True)
     sys.exit(1)
