@@ -4,30 +4,49 @@ VK Bot для сообщества FITLEX — «Краски и грунтовк
 Функции: каталог товаров, корзина, оплата ЮКасса, FAQ, информация о компании.
 """
 
+import sys
+import os
+
+# Принудительно отключаем буферизацию вывода (для Docker/BotHost)
+os.environ["PYTHONUNBUFFERED"] = "1"
+
+print("[STARTUP] bot.py загружается...", flush=True)
+
 import asyncio
 import json
 import logging
-import os
 import re
 import uuid
 
 try:
     from dotenv import load_dotenv
     load_dotenv()
+    print("[STARTUP] dotenv загружен", flush=True)
 except ImportError:
-    pass  # Railway doesn't need dotenv
+    print("[STARTUP] dotenv не найден (ок для сервера)", flush=True)
 
-from vkbottle import (
-    Keyboard,
-    KeyboardButtonColor,
-    Text,
-    Callback,
-    OpenLink,
-    GroupEventType,
-    GroupTypes,
-)
-from vkbottle.bot import Bot, Message
-from yookassa import Configuration, Payment
+try:
+    from vkbottle import (
+        Keyboard,
+        KeyboardButtonColor,
+        Text,
+        Callback,
+        OpenLink,
+        GroupEventType,
+        GroupTypes,
+    )
+    from vkbottle.bot import Bot, Message
+    print("[STARTUP] vkbottle импортирован", flush=True)
+except Exception as e:
+    print(f"[STARTUP] ОШИБКА импорта vkbottle: {e}", flush=True)
+    sys.exit(1)
+
+try:
+    from yookassa import Configuration, Payment
+    print("[STARTUP] yookassa импортирован", flush=True)
+except Exception as e:
+    print(f"[STARTUP] ОШИБКА импорта yookassa: {e}", flush=True)
+    sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════════
 #  НАСТРОЙКИ
@@ -38,7 +57,12 @@ VK_TOKEN = os.getenv("VK_TOKEN", "")
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
 
+print(f"[STARTUP] VK_TOKEN={'задан' if VK_TOKEN else 'ПУСТО!'}", flush=True)
+print(f"[STARTUP] YOOKASSA_SHOP_ID={'задан' if YOOKASSA_SHOP_ID else 'ПУСТО!'}", flush=True)
+print(f"[STARTUP] YOOKASSA_SECRET_KEY={'задан' if YOOKASSA_SECRET_KEY else 'ПУСТО!'}", flush=True)
+
 if not VK_TOKEN or not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+    print("[STARTUP] FATAL: Не заданы переменные окружения!", flush=True)
     raise RuntimeError(
         "Не заданы переменные окружения! Укажите VK_TOKEN, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY.\n"
         "См. файл .env.example"
