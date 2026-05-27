@@ -9,7 +9,7 @@ import os
 import faulthandler
 
 # Включаем отслеживание segfault'ов и других низкоуровневых падений
-faulthandler.enable()
+faulthandler.enable(file=sys.stdout)
 
 # Принудительно отключаем буферизацию вывода (для Docker/BotHost)
 os.environ["PYTHONUNBUFFERED"] = "1"
