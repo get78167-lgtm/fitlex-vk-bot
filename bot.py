@@ -249,8 +249,8 @@ def cart_text(user_id: int) -> str:
 
 def kb_main_menu() -> str:
     kb = Keyboard(one_time=False, inline=False)
-    kb.add(Text("🛒 Каталог"), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("📦 Корзина"), color=KeyboardButtonColor.POSITIVE)
+    kb.add(Text("📦 Каталог"), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Text("🛒 Корзина"), color=KeyboardButtonColor.POSITIVE)
     kb.row()
     kb.add(Text("❓ Консультация"), color=KeyboardButtonColor.SECONDARY)
     kb.add(Text("ℹ️ О компании"), color=KeyboardButtonColor.SECONDARY)
@@ -287,7 +287,7 @@ def kb_cart(user_id: int) -> str:
         kb.add(Callback("💳 Оплатить", payload={"c": "pay"}), color=KeyboardButtonColor.POSITIVE)
         kb.add(Callback("🗑 Очистить", payload={"c": "clr"}), color=KeyboardButtonColor.NEGATIVE)
     else:
-        kb.add(Callback("🛒 Каталог", payload={"c": "cat"}), color=KeyboardButtonColor.PRIMARY)
+        kb.add(Callback("📦 Каталог", payload={"c": "cat"}), color=KeyboardButtonColor.PRIMARY)
     return kb.get_json()
 
 
@@ -652,7 +652,7 @@ async def on_callback(event: GroupTypes.MessageEvent):
 # ═══════════════════════════════════════════════════════════════
 
 
-@bot.on.message(text=["Каталог", "🛒 Каталог", "каталог", "товары"])
+@bot.on.message(text=["Каталог", "📦 Каталог", "🛒 Каталог", "каталог", "товары"])
 async def handle_catalog(message: Message):
     logger.info("Каталог запрошен user=%s", message.from_id)
     lines = ["📦 Каталог товаров FITLEX:\n"]
@@ -662,7 +662,7 @@ async def handle_catalog(message: Message):
     await message.answer("\n".join(lines), keyboard=kb_catalog())
 
 
-@bot.on.message(text=["Корзина", "📦 Корзина", "корзина"])
+@bot.on.message(text=["Корзина", "🛒 Корзина", "📦 Корзина", "корзина"])
 async def handle_cart(message: Message):
     logger.info("Корзина запрошена user=%s", message.from_id)
     await message.answer(cart_text(message.from_id), keyboard=kb_cart(message.from_id))
@@ -692,6 +692,10 @@ async def handle_any(message: Message):
         (message.text or "")[:200],
         len(message.attachments) if message.attachments else 0,
     )
+
+    # Игнорируем групповые чаты — бот работает только в личных сообщениях
+    if message.peer_id != message.from_id:
+        return
 
     raw_text = message.text or ""
     text = raw_text.lower()
