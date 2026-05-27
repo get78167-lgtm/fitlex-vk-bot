@@ -693,12 +693,73 @@ async def handle_any(message: Message):
         len(message.attachments) if message.attachments else 0,
     )
 
-    # Игнорируем групповые чаты — бот работает только в личных сообщениях
-    if message.peer_id != message.from_id:
-        return
-
+    # В групповом чате — отвечаем только если упомянули бота
+    is_group_chat = message.peer_id != message.from_id
     raw_text = message.text or ""
+
+    if is_group_chat:
+        # Ищем упоминание: [club215128871|@fitlex_group] или @fitlex_group
+        mention_pattern = re.compile(
+            r'\[club' + str(GROUP_ID) + r'\|[^\]]*\]\s*|@fitlex_group\s*',
+            re.IGNORECASE,
+        )
+        if not mention_pattern.search(raw_text):
+            return  # Не упомянули — молчим
+        # Убираем упоминание, оставляем команду
+        raw_text = mention_pattern.sub('', raw_text).strip()
+
     text = raw_text.lower()
+
+    # Обработка команд из группового чата (после удаления упоминания)
+    if is_group_chat and text:
+        cmd_map = {
+            "каталог": "catalog",
+            "📦 каталог": "catalog",
+            "🛒 каталог": "catalog",
+            "товары": "catalog",
+            "корзина": "cart",
+            "🛒 корзина": "cart",
+            "📦 корзина": "cart",
+            "консультация": "faq",
+            "❓ консультация": "faq",
+            "помощь": "faq",
+            "о компании": "about",
+            "ℹ️ о компании": "about",
+            "контакты": "about",
+        }
+        cmd = cmd_map.get(text)
+        if cmd == "catalog":
+            lines = ["📦 Каталог товаров FITLEX:\n"]
+            for p in CATALOG:
+                lines.append(f"• {p['name']} — {p['price']} ₽")
+            lines.append("\nНажмите на товар для подробностей:")
+            await message.answer("\n".join(lines), keyboard=kb_catalog())
+            return
+        elif cmd == "cart":
+            await message.answer(
+                cart_text(message.from_id), keyboard=kb_cart(message.from_id)
+            )
+            return
+        elif cmd == "faq":
+            await message.answer(
+                "❓ Часто задаваемые вопросы:\n\nВыберите тему:",
+                keyboard=kb_faq(),
+            )
+            return
+        elif cmd == "about":
+            await message.answer(COMPANY_INFO, keyboard=kb_main_menu())
+            return
+        # Если команда не распознана — приветствие
+        user_info = await bot.api.users.get(user_ids=[message.from_id])
+        first_name = user_info[0].first_name if user_info else "друг"
+        await message.answer(
+            f"👋 Привет, {first_name}!\n\n"
+            "Я бот магазина FITLEX — краски и грунтовки.\n"
+            "Напишите мне в личные сообщения для оформления заказа 👇\n"
+            "Или используйте команды: Каталог, Корзина, Консультация, О компании",
+            keyboard=kb_main_menu(),
+        )
+        return
 
     # Обработка уведомления о заказе VK Market
     if "заказ успешно оформлен" in text or "номер заказа" in text:
