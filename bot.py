@@ -1,29 +1,28 @@
 import sys
+import os
 import time
 
-print("[DIAG-5] Start", flush=True)
+print("[DIAG-6] Start", flush=True)
 
-test_imports = [
-    "vkbottle_types",
-    "vkbottle_types.events",
-    "vkbottle_types.objects",
-    "vkbottle_types.methods",
-    "vkbottle.api",
-    "vkbottle.dispatch",
-    "vkbottle.exception_factory",
-    "vkbottle.framework",
-    "vkbottle.http",
-    "vkbottle.polling",
-    "vkbottle.tools",
-]
+try:
+    import importlib.util
+    spec = importlib.util.find_spec("vkbottle_types")
+    if spec:
+        print(f"[DIAG-6] spec.origin: {spec.origin}", flush=True)
+        if spec.origin and os.path.exists(spec.origin):
+            with open(spec.origin, "r", encoding="utf-8") as f:
+                content = f.read()
+            print("[DIAG-6] Content of vkbottle_types/__init__.py:\n", content, flush=True)
+            
+            # Let's check directory contents of vkbottle_types
+            dir_path = os.path.dirname(spec.origin)
+            print(f"[DIAG-6] Directory contents of {dir_path}:", os.listdir(dir_path), flush=True)
+        else:
+            print("[DIAG-6] Origin does not exist or is empty", flush=True)
+    else:
+        print("[DIAG-6] Spec not found for vkbottle_types", flush=True)
+except Exception as e:
+    print(f"[DIAG-6] Error: {type(e).__name__}: {e}", flush=True)
 
-for mod in test_imports:
-    try:
-        print(f"[DIAG-5] Importing {mod}...", flush=True)
-        m = __import__(mod, fromlist=["*"] if "." in mod else [])
-        print(f"[DIAG-5] {mod} imported successfully!", flush=True)
-    except BaseException as e:
-        print(f"[DIAG-5] Error importing {mod}: {type(e).__name__}: {e}", flush=True)
-
-print("[DIAG-5] Done. Sleeping...", flush=True)
+print("[DIAG-6] Done. Sleeping...", flush=True)
 time.sleep(3600)
