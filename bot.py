@@ -4,119 +4,61 @@ VK Bot для сообщества FITLEX — «Краски и грунтовк
 Функции: каталог товаров, корзина, оплата ЮКасса, FAQ, информация о компании.
 """
 
-import sys
-import os
-import faulthandler
-
-# Включаем отслеживание segfault'ов и других низкоуровневых падений
-faulthandler.enable(file=sys.stdout)
-
-# Принудительно отключаем буферизацию вывода (для Docker/BotHost)
-os.environ["PYTHONUNBUFFERED"] = "1"
-
-print("[STARTUP] bot.py загружается...", flush=True)
+from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import re
+import sys
+import threading
 import uuid
+from typing import Any
+
+# Принудительно отключаем буферизацию вывода (для Docker/BotHost)
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
+print("[STARTUP] bot.py загружается...", flush=True)
 
 try:
     from dotenv import load_dotenv
     load_dotenv()
     print("[STARTUP] dotenv загружен", flush=True)
-except BaseException as e:
-    print(f"[STARTUP] ОШИБКА при загрузке dotenv: {type(e).__name__}: {e}", flush=True)
+except Exception as e:
+    print(f"[STARTUP] WARN dotenv: {type(e).__name__}: {e}", flush=True)
 
-print("[STARTUP] Начинаем пошаговый импорт зависимостей...", flush=True)
+from vkbottle import (
+    Callback,
+    GroupEventType,
+    GroupTypes,
+    Keyboard,
+    KeyboardButtonColor,
+    OpenLink,
+    Text,
+)
+from vkbottle.bot import Bot, Message
+from yookassa import Configuration, Payment
 
-# Пошаговый импорт ключевых библиотек
-steps = [
-    ("aiohttp", "import aiohttp"),
-    ("pydantic", "import pydantic"),
-    ("vbml", "import vbml"),
-    ("choicelib", "import choicelib"),
-    ("yarl", "import yarl"),
-    ("multidict", "import multidict"),
-    ("msgpack", "import msgpack"),
-]
-
-for name, cmd in steps:
-    try:
-        print(f"[STARTUP] Попытка импорта {name}...", flush=True)
-        exec(cmd)
-        print(f"[STARTUP] {name} успешно импортирован!", flush=True)
-    except BaseException as e:
-        print(f"[STARTUP] КРАШ/ОШИБКА при импорте {name}: {type(e).__name__}: {e}", flush=True)
-
-try:
-    print("[STARTUP] Импортируем vkbottle подмодули...", flush=True)
-    
-    # Список подмодулей vkbottle для пошаговой проверки
-    vk_subs = [
-        "vkbottle.modules",
-        "vkbottle.exception",
-        "vkbottle.http",
-        "vkbottle.api",
-        "vkbottle.tools",
-        "vkbottle.dispatch",
-        "vkbottle.framework",
-        "vkbottle.bot",
-    ]
-    
-    for sub in vk_subs:
-        print(f"[STARTUP] Попытка импорта подмодуля {sub}...", flush=True)
-        exec(f"import {sub}")
-        print(f"[STARTUP] Подмодуль {sub} успешно импортирован!", flush=True)
-
-    from vkbottle import (
-        Keyboard,
-        KeyboardButtonColor,
-        Text,
-        Callback,
-        OpenLink,
-        GroupEventType,
-        GroupTypes,
-    )
-    from vkbottle.bot import Bot, Message
-    print("[STARTUP] vkbottle импортирован полностью", flush=True)
-except BaseException as e:
-    print(f"[STARTUP] КРАШ/ОШИБКА при импорте vkbottle: {type(e).__name__}: {e}", flush=True)
-    sys.exit(1)
-
-try:
-    print("[STARTUP] Импортируем yookassa...", flush=True)
-    from yookassa import Configuration, Payment
-    print("[STARTUP] yookassa импортирован", flush=True)
-except BaseException as e:
-    print(f"[STARTUP] КРАШ/ОШИБКА при импорте yookassa: {type(e).__name__}: {e}", flush=True)
-    sys.exit(1)
+print("[STARTUP] зависимости загружены", flush=True)
 
 # ═══════════════════════════════════════════════════════════════
 #  НАСТРОЙКИ
 # ═══════════════════════════════════════════════════════════════
 
 VK_TOKEN = os.getenv("VK_TOKEN", "")
-
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
 
-print(f"[STARTUP] VK_TOKEN={'задан' if VK_TOKEN else 'ПУСТО!'}", flush=True)
-print(f"[STARTUP] YOOKASSA_SHOP_ID={'задан' if YOOKASSA_SHOP_ID else 'ПУСТО!'}", flush=True)
-print(f"[STARTUP] YOOKASSA_SECRET_KEY={'задан' if YOOKASSA_SECRET_KEY else 'ПУСТО!'}", flush=True)
-
 if not VK_TOKEN or not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
-    print("[STARTUP] FATAL: Не заданы переменные окружения!", flush=True)
-    raise RuntimeError(
-        "Не заданы переменные окружения! Укажите VK_TOKEN, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY.\n"
-        "См. файл .env.example"
-    )
+    print("[STARTUP] FATAL: не заданы VK_TOKEN / YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY", flush=True)
+    raise RuntimeError("Не заданы обязательные переменные окружения")
 
 GROUP_ID = 215128871
 PAYMENT_CURRENCY = "RUB"
 POLL_INTERVAL_SEC = 5
 POLL_MAX_ATTEMPTS = 60
+GROUP_CHAT_PEER_OFFSET = 2_000_000_000  # VK прибавляет это к chat_id для бесед
 
 COMPANY_INFO = (
     "🏭 ООО «АТА-групп» (FITLEX)\n"
@@ -148,6 +90,17 @@ Configuration.account_id = YOOKASSA_SHOP_ID
 Configuration.secret_key = YOOKASSA_SECRET_KEY
 
 bot = Bot(token=VK_TOKEN)
+
+# Хранилище ссылок на фоновые задачи (защита от GC)
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 # ═══════════════════════════════════════════════════════════════
 #  КАТАЛОГ ТОВАРОВ
@@ -247,46 +200,50 @@ FAQ_ITEMS = {
 }
 
 # ═══════════════════════════════════════════════════════════════
-#  КОРЗИНА (файловое хранилище — переживает перезапуски)
+#  КОРЗИНА (атомарное файловое хранилище)
 # ═══════════════════════════════════════════════════════════════
 
-CART_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "carts.json")
+_DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+CART_FILE = os.path.join(_DATA_DIR, "carts.json")
+PENDING_FILE = os.path.join(_DATA_DIR, "pending_payments.json")
 
-# {payment_id: user_id}
-pending_payments: dict[str, int] = {}
+_carts_lock = threading.Lock()
+_pending_lock = threading.Lock()
 
 
-def _load_carts() -> dict[str, dict[str, int]]:
-    """Загрузить корзины из файла."""
+def _atomic_write_json(path: str, data: Any) -> None:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _read_json(path: str) -> dict:
     try:
-        with open(CART_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def _save_carts(carts: dict) -> None:
-    """Сохранить корзины в файл."""
-    try:
-        with open(CART_FILE, "w", encoding="utf-8") as f:
-            json.dump(carts, f, ensure_ascii=False)
-    except Exception as exc:
-        logger.error("Ошибка сохранения корзин: %s", exc)
-
-
 def get_cart(user_id: int) -> dict[int, int]:
-    carts = _load_carts()
+    with _carts_lock:
+        carts = _read_json(CART_FILE)
     raw = carts.get(str(user_id), {})
     return {int(k): v for k, v in raw.items()}
 
 
 def set_cart(user_id: int, cart: dict[int, int]) -> None:
-    carts = _load_carts()
-    if cart:
-        carts[str(user_id)] = {str(k): v for k, v in cart.items()}
-    else:
-        carts.pop(str(user_id), None)
-    _save_carts(carts)
+    with _carts_lock:
+        carts = _read_json(CART_FILE)
+        if cart:
+            carts[str(user_id)] = {str(k): v for k, v in cart.items()}
+        else:
+            carts.pop(str(user_id), None)
+        try:
+            _atomic_write_json(CART_FILE, carts)
+        except OSError as exc:
+            logger.error("Ошибка сохранения корзин: %s", exc)
 
 
 def clear_cart(user_id: int) -> None:
@@ -312,6 +269,44 @@ def cart_text(user_id: int) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+#  PENDING PAYMENTS (переживает рестарт бота)
+# ═══════════════════════════════════════════════════════════════
+
+
+def _load_pending() -> dict[str, int]:
+    with _pending_lock:
+        raw = _read_json(PENDING_FILE)
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+pending_payments: dict[str, int] = _load_pending()
+
+
+def _persist_pending() -> None:
+    with _pending_lock:
+        try:
+            _atomic_write_json(PENDING_FILE, pending_payments)
+        except OSError as exc:
+            logger.error("Ошибка сохранения pending_payments: %s", exc)
+
+
+def add_pending(payment_id: str, user_id: int) -> None:
+    pending_payments[payment_id] = user_id
+    _persist_pending()
+
+
+def remove_pending(payment_id: str) -> None:
+    pending_payments.pop(payment_id, None)
+    _persist_pending()
+
+
+# ═══════════════════════════════════════════════════════════════
 #  КЛАВИАТУРЫ
 # ═══════════════════════════════════════════════════════════════
 
@@ -326,12 +321,15 @@ def kb_main_menu() -> str:
     return kb.get_json()
 
 
+def _short_name(name: str) -> str:
+    return name.replace("Грунтовка ", "").replace("глубокого проникновения", "глуб. проник.")
+
+
 def kb_catalog() -> str:
     kb = Keyboard(inline=True)
     for p in CATALOG:
         # VK limit: button label ≤ 40 chars
-        short = p["name"].replace("Грунтовка ", "").replace("глубокого проникновения", "глуб. проник.")
-        label = f"{short} — {p['price']}₽"
+        label = f"{_short_name(p['name'])} — {p['price']}₽"
         kb.add(Callback(label[:40], payload={"c": "d", "id": p["id"]}))
         kb.row()
     return kb.get_json()
@@ -350,8 +348,7 @@ def kb_cart(user_id: int) -> str:
     if cart:
         for pid in cart:
             p = CATALOG_BY_ID[pid]
-            short = p["name"].replace("Грунтовка ", "").replace("глубокого проникновения", "глуб. проник.")
-            kb.add(Callback(f"❌ {short}"[:40], payload={"c": "rm", "id": pid}))
+            kb.add(Callback(f"❌ {_short_name(p['name'])}"[:40], payload={"c": "rm", "id": pid}))
             kb.row()
         kb.add(Callback("💳 Оплатить", payload={"c": "pay"}), color=KeyboardButtonColor.POSITIVE)
         kb.add(Callback("🗑 Очистить", payload={"c": "clr"}), color=KeyboardButtonColor.NEGATIVE)
@@ -373,11 +370,19 @@ def kb_faq() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  ОПЛАТА ЮКасса
+#  ОПЛАТА ЮКасса (sync SDK — оборачиваем в to_thread)
 # ═══════════════════════════════════════════════════════════════
 
 
-def create_payment(user_id: int) -> Payment | None:
+async def _yk_create(payload: dict, idempotence_key: str):
+    return await asyncio.to_thread(Payment.create, payload, idempotence_key)
+
+
+async def _yk_find(payment_id: str):
+    return await asyncio.to_thread(Payment.find_one, payment_id)
+
+
+async def create_payment(user_id: int):
     amount = cart_total(user_id)
     if amount <= 0:
         return None
@@ -386,24 +391,21 @@ def create_payment(user_id: int) -> Payment | None:
     description = "FITLEX: " + ", ".join(items)
     if len(description) > 128:
         description = description[:125] + "..."
-    try:
-        # Формируем чек (54-ФЗ)
-        receipt_items = []
-        for pid, qty in cart.items():
-            p = CATALOG_BY_ID[pid]
-            receipt_items.append({
-                "description": p["name"][:128],
-                "quantity": str(qty),
-                "amount": {
-                    "value": f"{p['price']}.00",
-                    "currency": PAYMENT_CURRENCY,
-                },
-                "vat_code": 1,
-                "payment_subject": "commodity",
-                "payment_mode": "full_payment",
-            })
 
-        payment = Payment.create(
+    receipt_items = []
+    for pid, qty in cart.items():
+        p = CATALOG_BY_ID[pid]
+        receipt_items.append({
+            "description": p["name"][:128],
+            "quantity": str(qty),
+            "amount": {"value": f"{p['price']}.00", "currency": PAYMENT_CURRENCY},
+            "vat_code": 1,
+            "payment_subject": "commodity",
+            "payment_mode": "full_payment",
+        })
+
+    try:
+        payment = await _yk_create(
             {
                 "amount": {"value": f"{amount}.00", "currency": PAYMENT_CURRENCY},
                 "confirmation": {"type": "redirect", "return_url": "https://vk.com/fitlex_group"},
@@ -424,12 +426,19 @@ def create_payment(user_id: int) -> Payment | None:
         return None
 
 
+async def _safe_send(**kwargs) -> None:
+    try:
+        await bot.api.messages.send(random_id=0, **kwargs)
+    except Exception as exc:
+        logger.warning("messages.send failed: %s (kwargs=%s)", exc, list(kwargs))
+
+
 async def poll_payment_status(payment_id: str, user_id: int) -> None:
     logger.info("Отслеживание платежа %s для user=%s", payment_id, user_id)
     for attempt in range(1, POLL_MAX_ATTEMPTS + 1):
         await asyncio.sleep(POLL_INTERVAL_SEC)
         try:
-            payment = Payment.find_one(payment_id)
+            payment = await _yk_find(payment_id)
         except Exception as exc:
             logger.warning("Ошибка проверки %s (попытка %d): %s", payment_id, attempt, exc)
             continue
@@ -437,8 +446,8 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
         if payment.status == "succeeded":
             logger.info("Платёж %s успешен!", payment_id)
             clear_cart(user_id)
-            await bot.api.messages.send(
-                user_id=user_id, random_id=0,
+            await _safe_send(
+                user_id=user_id,
                 message=(
                     f"✅ Оплата прошла успешно!\n\n"
                     f"💰 Сумма: {payment.amount.value} ₽\n"
@@ -447,26 +456,36 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
                 ),
                 keyboard=kb_main_menu(),
             )
-            pending_payments.pop(payment_id, None)
+            remove_pending(payment_id)
             return
 
         if payment.status == "canceled":
             logger.info("Платёж %s отменён.", payment_id)
-            await bot.api.messages.send(
-                user_id=user_id, random_id=0,
+            await _safe_send(
+                user_id=user_id,
                 message="❌ Платёж отменён. Попробуйте снова.",
                 keyboard=kb_main_menu(),
             )
-            pending_payments.pop(payment_id, None)
+            remove_pending(payment_id)
             return
 
     logger.warning("Таймаут для платежа %s", payment_id)
-    await bot.api.messages.send(
-        user_id=user_id, random_id=0,
+    await _safe_send(
+        user_id=user_id,
         message="⏳ Время ожидания оплаты истекло. Вернитесь в корзину и попробуйте снова.",
         keyboard=kb_main_menu(),
     )
-    pending_payments.pop(payment_id, None)
+    remove_pending(payment_id)
+
+
+async def _get_first_name(user_id: int) -> str:
+    try:
+        users = await bot.api.users.get(user_ids=[user_id])
+        if users:
+            return users[0].first_name or "друг"
+    except Exception as exc:
+        logger.warning("users.get failed for %s: %s", user_id, exc)
+    return "друг"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -477,24 +496,21 @@ async def poll_payment_status(payment_id: str, user_id: int) -> None:
 @bot.on.raw_event("market_order_new", dataclass=dict)
 async def on_market_order(event: dict):
     """Обработка нового заказа из VK Market."""
-    order = event.get("object", event)  # структура может отличаться
+    order = event.get("object", event)
     logger.info("MARKET ORDER RAW: %s", json.dumps(order, ensure_ascii=False, default=str)[:1000])
 
-    # Извлекаем данные заказа
     order_id = order.get("id", "—")
     buyer_id = order.get("user_id") or order.get("buyer_id")
     total_price = order.get("total_price", {})
 
-    # Цена может быть в копейках или рублях
     amount = 0
     if isinstance(total_price, dict):
         amount = int(total_price.get("amount", 0))
-        if amount > 10000:  # скорее всего в копейках
+        if amount > 10000:  # VK иногда отдаёт в копейках
             amount = amount // 100
     elif isinstance(total_price, (int, float)):
         amount = int(total_price)
 
-    # Стоимость доставки
     delivery = 0
     delivery_info = order.get("delivery", {})
     if isinstance(delivery_info, dict):
@@ -515,7 +531,6 @@ async def on_market_order(event: dict):
         logger.warning("Не удалось определить покупателя для заказа %s", order_id)
         return
 
-    # Клавиатура с двумя способами оплаты
     kb = Keyboard(inline=True)
     order_url = f"https://vk.com/orders{buyer_id}_{order_id}"
     kb.add(OpenLink(order_url, label="💳 Оплатить через VK Pay"))
@@ -533,15 +548,8 @@ async def on_market_order(event: dict):
         msg_text += f"🚚 Доставка: {delivery} ₽\n💵 Итого: {amount + delivery} ₽\n"
     msg_text += "\nВыберите способ оплаты:"
 
-    try:
-        await bot.api.messages.send(
-            user_id=buyer_id, random_id=0,
-            message=msg_text,
-            keyboard=kb.get_json(),
-        )
-        logger.info("Кнопки оплаты отправлены покупателю %s", buyer_id)
-    except Exception as exc:
-        logger.error("Ошибка отправки кнопок покупателю %s: %s", buyer_id, exc)
+    await _safe_send(user_id=buyer_id, message=msg_text, keyboard=kb.get_json())
+    logger.info("Кнопки оплаты отправлены покупателю %s", buyer_id)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -561,78 +569,70 @@ async def on_callback(event: GroupTypes.MessageEvent):
 
     cmd = payload.get("c")
     pid = payload.get("id")
-
-    # Acknowledge the callback (dismiss loading spinner)
-    snackbar = None
+    snackbar: str | None = None
 
     if cmd == "d" and pid:
-        # Product detail
         product = CATALOG_BY_ID.get(pid)
         if product:
-            await bot.api.messages.send(
-                user_id=user_id, random_id=0,
+            await _safe_send(
+                user_id=user_id,
                 message=f"📋 {product['name']}\n💰 {product['price']} ₽\n\n{product['description']}",
                 keyboard=kb_product(pid),
             )
 
     elif cmd == "a" and pid:
-        # Add to cart
         cart = get_cart(user_id)
         cart[pid] = cart.get(pid, 0) + 1
         set_cart(user_id, cart)
         product = CATALOG_BY_ID.get(pid)
-        snackbar = f"✅ {product['name']} добавлен в корзину"
+        snackbar = f"✅ {product['name']} добавлен в корзину" if product else "✅ Добавлено"
         logger.info("user=%s добавил товар %s в корзину", user_id, pid)
 
     elif cmd == "rm" and pid:
-        # Remove from cart
         cart = get_cart(user_id)
         cart.pop(pid, None)
         set_cart(user_id, cart)
         snackbar = "🗑 Товар удалён из корзины"
-        await bot.api.messages.send(
-            user_id=user_id, random_id=0,
+        await _safe_send(
+            user_id=user_id,
             message=cart_text(user_id),
             keyboard=kb_cart(user_id),
         )
 
     elif cmd == "clr":
-        # Clear cart
         clear_cart(user_id)
         snackbar = "🗑 Корзина очищена"
-        await bot.api.messages.send(
-            user_id=user_id, random_id=0,
+        await _safe_send(
+            user_id=user_id,
             message="🛒 Корзина очищена.",
             keyboard=kb_main_menu(),
         )
 
     elif cmd == "cat":
-        # Show catalog
         lines = ["📦 Каталог товаров FITLEX:\n"]
         for p in CATALOG:
             lines.append(f"• {p['name']} — {p['price']} ₽")
         lines.append("\nНажмите на товар для подробностей:")
-        await bot.api.messages.send(
-            user_id=user_id, random_id=0,
+        await _safe_send(
+            user_id=user_id,
             message="\n".join(lines),
             keyboard=kb_catalog(),
         )
 
     elif cmd == "pay":
-        # Create payment
         total = cart_total(user_id)
         if total < 2000:
             snackbar = f"⚠️ Минимальный заказ 2 000 ₽ (сейчас {total} ₽)"
         else:
-            payment = create_payment(user_id)
+            payment = await create_payment(user_id)
             if payment:
                 url = payment.confirmation.confirmation_url
                 pay_kb = Keyboard(inline=True)
                 pay_kb.add(OpenLink(url, label="💳 Перейти к оплате"))
 
-                pending_payments[payment.id] = user_id
-                await bot.api.messages.send(
-                    user_id=user_id, random_id=0,
+                add_pending(payment.id, user_id)
+                await _safe_send(
+                    user_id=user_id,
                     message=(
                         f"💰 Сумма: {total} ₽\n\n"
                         "Нажмите кнопку ниже для оплаты.\n"
@@ -640,12 +640,11 @@ async def on_callback(event: GroupTypes.MessageEvent):
                     ),
                     keyboard=pay_kb.get_json(),
                 )
-                asyncio.create_task(poll_payment_status(payment.id, user_id))
+                _spawn(poll_payment_status(payment.id, user_id))
             else:
                 snackbar = "⚠️ Ошибка создания платежа"
 
     elif cmd == "pay_order":
-        # Оплата заказа VK через ЮКасса
         order_amount = payload.get("amount", 0)
         order_num = payload.get("order", "—")
         if order_amount > 0:
@@ -658,7 +657,7 @@ async def on_callback(event: GroupTypes.MessageEvent):
                     "payment_subject": "commodity",
                     "payment_mode": "full_payment",
                 }]
-                payment = Payment.create(
+                payment = await _yk_create(
                     {
                         "amount": {"value": f"{order_amount}.00", "currency": PAYMENT_CURRENCY},
                         "confirmation": {"type": "redirect", "return_url": "https://vk.com/fitlex_group"},
@@ -676,9 +675,9 @@ async def on_callback(event: GroupTypes.MessageEvent):
                 pay_kb = Keyboard(inline=True)
                 pay_kb.add(OpenLink(url, label=f"💳 Оплатить {order_amount} ₽"))
 
-                pending_payments[payment.id] = user_id
-                await bot.api.messages.send(
-                    user_id=user_id, random_id=0,
+                add_pending(payment.id, user_id)
+                await _safe_send(
+                    user_id=user_id,
                     message=(
                         f"💳 Оплата заказа №{order_num} через ЮКасса\n\n"
                         f"💰 Сумма: {order_amount} ₽\n\n"
@@ -687,7 +686,7 @@ async def on_callback(event: GroupTypes.MessageEvent):
                     ),
                     keyboard=pay_kb.get_json(),
                 )
-                asyncio.create_task(poll_payment_status(payment.id, user_id))
+                _spawn(poll_payment_status(payment.id, user_id))
             except Exception as exc:
                 logger.error("Ошибка оплаты заказа VK: %s", exc)
                 snackbar = "⚠️ Ошибка создания платежа"
@@ -696,18 +695,15 @@ async def on_callback(event: GroupTypes.MessageEvent):
 
     elif cmd == "faq" and pid:
         answer = FAQ_ITEMS.get(pid, "Информация не найдена.")
-        await bot.api.messages.send(
-            user_id=user_id, random_id=0,
+        await _safe_send(
+            user_id=user_id,
             message=answer,
             keyboard=kb_faq(),
         )
 
-    # Send callback answer (dismiss loading spinner)
+    # Закрываем спиннер кнопки
     try:
-        if snackbar:
-            event_data = json.dumps({"type": "show_snackbar", "text": snackbar[:90]})
-        else:
-            event_data = json.dumps({"type": "show_snackbar", "text": "✅"})
+        event_data = json.dumps({"type": "show_snackbar", "text": (snackbar or "✅")[:90]})
         await bot.api.messages.send_message_event_answer(
             event_id=event_id, user_id=user_id, peer_id=peer_id,
             event_data=event_data,
@@ -721,14 +717,18 @@ async def on_callback(event: GroupTypes.MessageEvent):
 # ═══════════════════════════════════════════════════════════════
 
 
-@bot.on.message(text=["Каталог", "📦 Каталог", "🛒 Каталог", "каталог", "товары"])
-async def handle_catalog(message: Message):
-    logger.info("Каталог запрошен user=%s", message.from_id)
+async def _send_catalog(message: Message) -> None:
     lines = ["📦 Каталог товаров FITLEX:\n"]
     for p in CATALOG:
         lines.append(f"• {p['name']} — {p['price']} ₽")
     lines.append("\nНажмите на товар для подробностей:")
     await message.answer("\n".join(lines), keyboard=kb_catalog())
+
+
+@bot.on.message(text=["Каталог", "📦 Каталог", "🛒 Каталог", "каталог", "товары"])
+async def handle_catalog(message: Message):
+    logger.info("Каталог запрошен user=%s", message.from_id)
+    await _send_catalog(message)
 
 
 @bot.on.message(text=["Корзина", "🛒 Корзина", "📦 Корзина", "корзина"])
@@ -752,9 +752,30 @@ async def handle_about(message: Message):
     await message.answer(COMPANY_INFO, keyboard=kb_main_menu())
 
 
+_MENTION_RE = re.compile(
+    r'\[club' + str(GROUP_ID) + r'\|[^\]]*\]\s*|@fitlex_group\s*',
+    re.IGNORECASE,
+)
+
+_GROUP_CMD_MAP = {
+    "каталог": "catalog",
+    "📦 каталог": "catalog",
+    "🛒 каталог": "catalog",
+    "товары": "catalog",
+    "корзина": "cart",
+    "🛒 корзина": "cart",
+    "📦 корзина": "cart",
+    "консультация": "faq",
+    "❓ консультация": "faq",
+    "помощь": "faq",
+    "о компании": "about",
+    "ℹ️ о компании": "about",
+    "контакты": "about",
+}
+
+
 @bot.on.message()
 async def handle_any(message: Message):
-    # Логируем все сообщения для отладки
     logger.info(
         "RAW MSG: from_id=%s, peer_id=%s, text=%r, attachments=%s",
         message.from_id, message.peer_id,
@@ -762,65 +783,37 @@ async def handle_any(message: Message):
         len(message.attachments) if message.attachments else 0,
     )
 
-    # В групповом чате — отвечаем только если упомянули бота
-    is_group_chat = message.peer_id != message.from_id
     raw_text = message.text or ""
 
+    # VK кодирует беседы offset'ом 2_000_000_000 — это надёжнее, чем peer != from
+    is_group_chat = message.peer_id > GROUP_CHAT_PEER_OFFSET
+
     if is_group_chat:
-        # Ищем упоминание: [club215128871|@fitlex_group] или @fitlex_group
-        mention_pattern = re.compile(
-            r'\[club' + str(GROUP_ID) + r'\|[^\]]*\]\s*|@fitlex_group\s*',
-            re.IGNORECASE,
-        )
-        if not mention_pattern.search(raw_text):
-            return  # Не упомянули — молчим
-        # Убираем упоминание, оставляем команду
-        raw_text = mention_pattern.sub('', raw_text).strip()
+        if not _MENTION_RE.search(raw_text):
+            return  # не упомянули — молчим
+        raw_text = _MENTION_RE.sub('', raw_text).strip()
 
     text = raw_text.lower()
 
-    # Обработка команд из группового чата (после удаления упоминания)
     if is_group_chat and text:
-        cmd_map = {
-            "каталог": "catalog",
-            "📦 каталог": "catalog",
-            "🛒 каталог": "catalog",
-            "товары": "catalog",
-            "корзина": "cart",
-            "🛒 корзина": "cart",
-            "📦 корзина": "cart",
-            "консультация": "faq",
-            "❓ консультация": "faq",
-            "помощь": "faq",
-            "о компании": "about",
-            "ℹ️ о компании": "about",
-            "контакты": "about",
-        }
-        cmd = cmd_map.get(text)
+        cmd = _GROUP_CMD_MAP.get(text)
         if cmd == "catalog":
-            lines = ["📦 Каталог товаров FITLEX:\n"]
-            for p in CATALOG:
-                lines.append(f"• {p['name']} — {p['price']} ₽")
-            lines.append("\nНажмите на товар для подробностей:")
-            await message.answer("\n".join(lines), keyboard=kb_catalog())
+            await _send_catalog(message)
             return
-        elif cmd == "cart":
-            await message.answer(
-                cart_text(message.from_id), keyboard=kb_cart(message.from_id)
-            )
+        if cmd == "cart":
+            await message.answer(cart_text(message.from_id), keyboard=kb_cart(message.from_id))
             return
-        elif cmd == "faq":
+        if cmd == "faq":
             await message.answer(
                 "❓ Часто задаваемые вопросы:\n\nВыберите тему:",
                 keyboard=kb_faq(),
             )
             return
-        elif cmd == "about":
+        if cmd == "about":
             await message.answer(COMPANY_INFO, keyboard=kb_main_menu())
             return
-        # Если команда не распознана — приветствие
-        user_info = await bot.api.users.get(user_ids=[message.from_id])
-        first_name = user_info[0].first_name if user_info else "друг"
+        # неизвестная команда в чате — приветствие
+        first_name = await _get_first_name(message.from_id)
         await message.answer(
             f"👋 Привет, {first_name}!\n\n"
             "Я бот магазина FITLEX — краски и грунтовки.\n"
@@ -830,14 +823,12 @@ async def handle_any(message: Message):
         )
         return
 
-    # Обработка уведомления о заказе VK Market
+    # Уведомление о заказе VK Market (текстом)
     if "заказ успешно оформлен" in text or "номер заказа" in text:
-        # Парсим данные заказа (учитываем неразрывные пробелы \xa0 и обычные)
         clean_text = raw_text.replace('\xa0', ' ')
         clean_lower = clean_text.lower()
 
         order_match = re.search(r'номер заказа\s+(\d+)', clean_lower)
-        # Стоимость может быть "3 550" или "3550" или "3,550"
         amount_match = re.search(r'стоимость заказа:\s*([\d\s,.]+)\s*руб', clean_lower)
         delivery_match = re.search(r'стоимость доставки:\s*([\d\s,.]+)\s*руб', clean_lower)
         order_url_match = re.search(r'(https://vk\.com/orders\S+)', clean_text)
@@ -854,14 +845,12 @@ async def handle_any(message: Message):
         delivery = parse_amount(delivery_match)
         order_url = order_url_match.group(1) if order_url_match else ""
 
-        # Извлекаем user_id покупателя из URL заказа (формат: /orders{user_id}_{order_num})
         buyer_id = None
         if order_url:
             buyer_match = re.search(r'/orders(\d+)_', order_url)
             if buyer_match:
                 buyer_id = int(buyer_match.group(1))
 
-        # Определяем куда отправлять ответ
         if buyer_id:
             reply_peer = buyer_id
         elif message.from_id > 0:
@@ -874,7 +863,6 @@ async def handle_any(message: Message):
             order_num, total, delivery, message.from_id, message.peer_id, buyer_id, reply_peer,
         )
 
-        # Клавиатура с двумя способами оплаты
         kb = Keyboard(inline=True)
         if order_url:
             kb.add(OpenLink(order_url, label="💳 Оплатить через VK Pay"))
@@ -891,51 +879,49 @@ async def handle_any(message: Message):
             msg_text += f"🚚 Доставка: {delivery} ₽\n💵 Итого: {total + delivery} ₽\n"
         msg_text += "\nВыберите способ оплаты:"
 
-        await bot.api.messages.send(
-            peer_id=reply_peer, random_id=0,
-            message=msg_text,
-            keyboard=kb.get_json(),
-        )
+        await _safe_send(peer_id=reply_peer, message=msg_text, keyboard=kb.get_json())
         return
 
-    # Игнорируем сообщения от сообщества (системные уведомления)
+    # Игнорируем сообщения от сообщества (системные)
     if message.from_id <= 0:
         return
 
-    # Игнорируем прочие системные сообщения
+    # Системные уведомления о статусе заказа
     skip_phrases = ["заказ отменён", "заказ доставлен", "статус заказа"]
     if any(phrase in text for phrase in skip_phrases):
         return
 
-    # Обработка шаблонного сообщения «Меня заинтересовал данный товар»
-    # (отправляется VK, когда покупатель нажимает «Написать» в карточке товара)
+    # Шаблон «Меня заинтересовал данный товар»
     if "заинтересовал" in text:
         matched = None
 
-        # 1) Ищем market-вложение (VK отправляет товар как attachment)
-        if hasattr(message, "attachments") and message.attachments:
+        # 1) Market-вложение
+        if message.attachments:
             for att in message.attachments:
-                if hasattr(att, "market") and att.market:
-                    market_title = att.market.title.lower()
-                    market_price = getattr(att.market.price, "amount", None)
-                    logger.info("Market attachment: title=%s, price=%s", att.market.title, market_price)
+                market = getattr(att, "market", None)
+                if not market:
+                    continue
+                market_title = (market.title or "").lower()
+                market_price = getattr(getattr(market, "price", None), "amount", None)
+                logger.info("Market attachment: title=%s, price=%s", market.title, market_price)
 
-                    # Приоритет 1: по цене (уникальна для каждого товара)
-                    if market_price:
-                        price_rub = int(market_price) // 100
-                        for p in CATALOG:
-                            if p["price"] == price_rub:
-                                matched = p
-                                break
+                if market_price:
+                    price_rub = int(market_price) // 100
+                    for p in CATALOG:
+                        if p["price"] == price_rub:
+                            matched = p
+                            break
 
-                    # Приоритет 2: по точному вхождению названия
-                    if not matched:
-                        for p in CATALOG:
-                            if p["name"].lower() in market_title or market_title in p["name"].lower():
-                                matched = p
-                                break
+                if not matched and market_title:
+                    for p in CATALOG:
+                        if p["name"].lower() in market_title or market_title in p["name"].lower():
+                            matched = p
+                            break
 
-        # 2) Если вложений нет — ищем в тексте
+                if matched:
+                    break
+
+        # 2) Поиск в тексте
         if not matched:
             for p in CATALOG:
                 if p["name"].lower() in text:
@@ -958,18 +944,16 @@ async def handle_any(message: Message):
                 keyboard=kb_product(matched["id"]),
             )
             return
-        else:
-            # Товар не найден — показываем каталог
-            logger.info("Запрос товара не распознан, показываем каталог, user=%s", message.from_id)
-            lines = ["👋 Вас заинтересовал товар!\n\nВот наш каталог — выберите нужную позицию:\n"]
-            for p in CATALOG:
-                lines.append(f"• {p['name']} — {p['price']} ₽")
-            await message.answer("\n".join(lines), keyboard=kb_catalog())
-            return
+
+        logger.info("Запрос товара не распознан, показываем каталог, user=%s", message.from_id)
+        lines = ["👋 Вас заинтересовал товар!\n\nВот наш каталог — выберите нужную позицию:\n"]
+        for p in CATALOG:
+            lines.append(f"• {p['name']} — {p['price']} ₽")
+        await message.answer("\n".join(lines), keyboard=kb_catalog())
+        return
 
     # Приветствие на любое другое сообщение
-    user_info = await bot.api.users.get(user_ids=[message.from_id])
-    first_name = user_info[0].first_name if user_info else "друг"
+    first_name = await _get_first_name(message.from_id)
     logger.info("Приветствие для %s (id%s)", first_name, message.from_id)
     await message.answer(
         f"👋 Привет, {first_name}!\n\n"
@@ -977,6 +961,22 @@ async def handle_any(message: Message):
         "Выбери, что тебя интересует 👇",
         keyboard=kb_main_menu(),
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STARTUP: возобновление polling'а недооплаченных платежей
+# ═══════════════════════════════════════════════════════════════
+
+
+async def _resume_pending_payments() -> None:
+    if not pending_payments:
+        return
+    logger.info("Возобновляем %d pending платежей", len(pending_payments))
+    for payment_id, user_id in list(pending_payments.items()):
+        _spawn(poll_payment_status(payment_id, user_id))
+
+
+bot.loop_wrapper.on_startup.append(_resume_pending_payments())
 
 
 # ═══════════════════════════════════════════════════════════════

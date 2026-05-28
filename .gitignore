@@ -1,3 +1,6 @@
 .env
 __pycache__/
 *.pyc
+carts.json
+pending_payments.json
+*.json.tmp
